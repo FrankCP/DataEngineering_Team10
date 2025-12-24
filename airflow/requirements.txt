@@ -1,0 +1,5 @@
+pandas
+pyarrow
+psycopg2-binary
+sqlalchemy
+pyspark==3.5.1
