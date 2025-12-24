@@ -4,4 +4,4 @@ Data Engineering Final Project - Team 10
 - Mikhail Sakhno
 - Nabil Atta 
 - Frank Carrasco 
-- Walid Amavi
+- waleed amawy
