@@ -27,7 +27,6 @@ def build_orders_mart():
     )
 
     hook.run("""
-        CREATE SCHEMA IF NOT EXISTS ddv;
         DROP TABLE IF EXISTS ddv.orders_mart;
     """)
 
@@ -123,10 +122,11 @@ def build_orders_mart():
     spark.stop()
 
 with DAG(
-    dag_id="03_ddv_orders_mart_pyspark",
+    dag_id="03_udv_to_ddv_orders_mart",
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     catchup=False,
+    is_paused_upon_creation=False,
     tags=["ddv", "orders", "pyspark"]
 ):
     PythonOperator(

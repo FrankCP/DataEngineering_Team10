@@ -9,7 +9,6 @@ PARQUET_PATH = "/opt/airflow/data"
 def parquet_to_rdv():
     
     hook = PostgresHook("main_postgres")
-    hook.run("CREATE SCHEMA IF NOT EXISTS rdv;")
 
     spark = SparkSession.builder \
         .appName("parquet_to_rdv") \
@@ -34,13 +33,14 @@ def parquet_to_rdv():
     spark.stop()
 
 with DAG(
-    dag_id="parquet_to_rdv",
+    dag_id="01_parquet_to_rdv",
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     catchup=False,
+    is_paused_upon_creation=False,
     tags=["rdv"]
 ):
     PythonOperator(
-        task_id="load_raw_orders",
+        task_id="01_parquet_to_rdv",
         python_callable=parquet_to_rdv
     )

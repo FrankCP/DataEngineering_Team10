@@ -3,20 +3,13 @@ from airflow.providers.postgres.operators.postgres import PostgresOperator
 from datetime import datetime
 
 with DAG(
-    dag_id="rdv_to_udv_sql",
+    dag_id="02_rdv_to_udv",
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     catchup=False,
+    is_paused_upon_creation=False,
     tags=["udv", "sql"]
 ) as dag:
-
-    create_udv_schema = PostgresOperator(
-        task_id="create_udv_schema",
-        postgres_conn_id="main_postgres",
-        sql="""
-        CREATE SCHEMA IF NOT EXISTS udv;
-        """
-    )
 
     create_udv_tables = PostgresOperator(
         task_id="create_udv_tables",
@@ -253,8 +246,7 @@ with DAG(
     )
 
     (
-        create_udv_schema
-        >> create_udv_tables
+        create_udv_tables
         >> truncate_udv_tables
         >> [
             load_udv_users,

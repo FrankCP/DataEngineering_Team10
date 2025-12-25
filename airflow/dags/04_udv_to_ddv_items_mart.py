@@ -107,10 +107,11 @@ def build_items_mart():
 
 
 with DAG(
-    dag_id="04_ddv_items_mart_pyspark",
+    dag_id="04_udv_to_ddv_items_mart",
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     catchup=False,
+    is_paused_upon_creation=False,
     tags=["ddv", "items", "pyspark"]
 ):
     PythonOperator(
