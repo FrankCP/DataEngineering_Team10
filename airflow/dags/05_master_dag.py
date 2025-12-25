@@ -7,6 +7,7 @@ with DAG(
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     catchup=False,
+    is_paused_upon_creation=False,
     tags=["master", "pipeline"]
 ):
 
@@ -34,4 +35,7 @@ with DAG(
         wait_for_completion=False
     )
 
-    run_dag_1 >> run_dag_2 >> run_dag_3 >> run_dag_4
+    run_dag_1 >> run_dag_2 >> [
+            run_dag_3,
+            run_dag_4
+        ]
