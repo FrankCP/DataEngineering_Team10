@@ -29,8 +29,5 @@ else
   echo "Admin user created."
 fi
 
-echo "Unpausing all DAGs..."
-airflow dags unpause $(airflow dags list --output plain | tail -n +2 | awk '{print $1}') || true
-
 echo "Starting Airflow: airflow $@"
 exec airflow "$@"
