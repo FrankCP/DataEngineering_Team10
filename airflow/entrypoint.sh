@@ -10,21 +10,23 @@ echo "Postgres is available."
 echo "Initializing Airflow database..."
 airflow db migrate
 
-echo "Checking if admin user exists..."
-USER_EXISTS=$(airflow users list | grep -c "admin" || true)
+echo "Creating admin user (if not exists)..."
 
-if [ "$USER_EXISTS" -eq "0" ]; then
-    echo "Creating admin user..."
-    airflow users list | grep admin || \
-    airflow users create \
-      --username admin \
-      --password admin \
-      --firstname Admin \
-      --lastname User \
-      --role Admin \
-      --email admin@example.com
+set +e
+airflow users create \
+  --username admin \
+  --password admin \
+  --firstname Admin \
+  --lastname User \
+  --role Admin \
+  --email admin@example.com
+EXIT_CODE=$?
+set -e
+
+if [ "$EXIT_CODE" -ne 0 ]; then
+  echo "Admin user already exists — skipping creation."
 else
-    echo "Admin user already exists — skipping creation."
+  echo "Admin user created."
 fi
 
 echo "Starting Airflow: airflow $@"
