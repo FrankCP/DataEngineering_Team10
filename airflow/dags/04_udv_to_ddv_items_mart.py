@@ -34,119 +34,206 @@ def build_items_mart():
     """)
 
     orders   = spark.read.jdbc(jdbc_url, "udv.orders", properties=props)
-    orders_items    = spark.read.jdbc(jdbc_url, "udv.order_items", properties=props)
-    items = spark.read.jdbc(jdbc_url, "udv.items", properties=props)
-    stores   = spark.read.jdbc(jdbc_url, "udv.stores", properties=props)
-    delivery = spark.read.jdbc(jdbc_url, "udv.deliveries", properties=props)
+    items    = spark.read.jdbc(jdbc_url, "udv.items", properties=props)
+    oi       = spark.read.jdbc(jdbc_url, "udv.order_items", properties=props)
 
-    base = (
-        orders_items
+    df = (
+        oi
         .join(orders, "order_id")
-        .join(items, "item_id","left")
-        .join(stores, "store_id","left")
-        .join(delivery, "order_id", "left")
+        .join(items, "item_id")
+        .filter(col("canceled_at").isNull() )
+    )
+
+    df = (
+        df
         .withColumn("order_date", to_date("created_at"))
         .withColumn("year", year("created_at"))
         .withColumn("month", month("created_at"))
+        .withColumn("week",weekofyear("created_at"))
         .withColumn("day", dayofmonth("created_at"))
-        .withColumn("week", weekofyear("created_at"))
-        .withColumn("city", split(col("address_text"), ",").getItem(0))
-    )
-
-    enriched = (
-        base
+        .withColumn("city", trim(split(col("address_text"), ",").getItem(0)))
         .withColumn(
             "item_turnover",
-            col("item_quantity")
-            * col("item_price")
-            * (1 - coalesce(col("item_discount"), lit(0)) / 100)
-            * (1 - coalesce(col("order_discount"), lit(0)) / 100)
+            col("item_quantity") *
+            col("item_price") *
+            (1 - coalesce(col("item_discount"), lit(0)) / 100)
         )
     )
 
     mart_base = (
-        enriched
+        df
         .groupBy(
-            "year",
-            "month",
-            "day",
-            "week",
-            "city",
-            "store_id",
-            "item_category",
-            "item_id",
-            "item_title"
+            "year", "month", "week", "day",
+            "city", "store_id",
+            "item_category", "item_id", "item_title"
         )
         .agg(
             sum("item_turnover").alias("item_turnover"),
             sum("item_quantity").alias("tot_items_ordered"),
             sum("item_canceled_quantity").alias("tot_canceled_units"),
-
             countDistinct("order_id").alias("tot_orders_item"),
-
             countDistinct(
                 when(col("item_canceled_quantity") > 0, col("order_id"))
             ).alias("tot_order_cancellation")
         )
     )
-
-
-    pop_day = (
-        mart_base
-        .groupBy("year", "month", "day", "city", "store_id")
+    
+    daily_pop = (
+        df
+        .groupBy("year", "month", "day", "city", "store_id", "item_title")
         .agg(
-            max(struct(col("tot_items_ordered"), col("item_title"))).alias("max_item"),
-            min(struct(col("tot_items_ordered"), col("item_title"))).alias("min_item")
-        )
-        .select(
-            "year", "month", "day", "city", "store_id",
-            col("max_item.item_title").alias("most_popular_day"),
-            col("min_item.item_title").alias("least_popular_day")
+            sum(
+                col("item_quantity") - coalesce(col("item_canceled_quantity"), lit(0))
+            ).alias("qty")
         )
     )
 
-    # ----------------------------------------------------
-    # MOST / LEAST POPULAR — WEEK
-    # ----------------------------------------------------
-    pop_week = (
-        mart_base
-        .groupBy("year", "week", "city", "store_id")
-        .agg(
-            max(struct(col("tot_items_ordered"), col("item_title"))).alias("max_item"),
-            min(struct(col("tot_items_ordered"), col("item_title"))).alias("min_item")
-        )
+    day_desc = Window.partitionBy(
+        "year", "month", "day","city", "store_id"
+    ).orderBy(col("qty").desc())
+
+    day_asc = Window.partitionBy(
+        "year", "month", "day","city", "store_id"
+    ).orderBy(col("qty").asc())
+
+
+    daily_ranked = (
+    daily_pop
+    .withColumn("rn_max", row_number().over(day_desc))
+    .withColumn("rn_min", row_number().over(day_asc))
+)
+
+    daily_final = (
+        daily_ranked
         .select(
-            "year", "week", "city", "store_id",
-            col("max_item.item_title").alias("most_popular_week"),
-            col("min_item.item_title").alias("least_popular_week")
+            "year", "month", "day",
+            "city", "store_id",
+            when(col("rn_max") == 1, col("item_title")).alias("most_pop_item_per_day"),
+            when(col("rn_min") == 1, col("item_title")).alias("lst_pop_item_per_day")
+        )
+        .groupBy(
+            "year", "month", "day",
+            "city", "store_id"
+        )
+        .agg(
+            max("most_pop_item_per_day").alias("most_pop_item_per_day"),
+            max("lst_pop_item_per_day").alias("lst_pop_item_per_day")
         )
     )
 
-    # ----------------------------------------------------
-    # MOST / LEAST POPULAR — MONTH
-    # ----------------------------------------------------
-    pop_month = (
-        mart_base
-        .groupBy("year", "month", "city", "store_id")
+    weekly_pop = (
+        df
+        .groupBy("year", "week", "city", "store_id", "item_title")
         .agg(
-            max(struct(col("tot_items_ordered"), col("item_title"))).alias("max_item"),
-            min(struct(col("tot_items_ordered"), col("item_title"))).alias("min_item")
+            sum(
+                col("item_quantity") - coalesce(col("item_canceled_quantity"), lit(0))
+            ).alias("qty")
         )
+    )
+    week_desc = Window.partitionBy(
+        "year", "week",
+        "city", "store_id"
+    ).orderBy(col("qty").desc())
+
+    week_asc = Window.partitionBy(
+        "year", "week",
+        "city", "store_id"
+    ).orderBy(col("qty").asc())
+
+    weekly_ranked = (
+        weekly_pop
+        .withColumn("rn_max", row_number().over(week_desc))
+        .withColumn("rn_min", row_number().over(week_asc))
+    )
+
+    weekly_final = (
+        weekly_ranked
         .select(
-            "year", "month", "city", "store_id",
-            col("max_item.item_title").alias("most_popular_month"),
-            col("min_item.item_title").alias("least_popular_month")
+            "year", "week",
+            "city", "store_id",
+            when(col("rn_max") == 1, col("item_title")).alias("most_pop_item_per_week"),
+            when(col("rn_min") == 1, col("item_title")).alias("lst_pop_item_per_week")
+        )
+        .groupBy(
+            "year", "week",
+            "city", "store_id"
+        )
+        .agg(
+            max("most_pop_item_per_week").alias("most_pop_item_per_week"),
+            max("lst_pop_item_per_week").alias("lst_pop_item_per_week")
         )
     )
 
-    # ----------------------------------------------------
-    # Final mart
-    # ----------------------------------------------------
+    
+    monthly_pop = (
+        df
+        .groupBy("year", "month", "city", "store_id", "item_title")
+        .agg(
+            sum(
+                col("item_quantity") - coalesce(col("item_canceled_quantity"), lit(0))
+            ).alias("qty")
+        )
+    )
+    month_desc = Window.partitionBy(
+        "year", "month",
+        "city", "store_id"
+    ).orderBy(col("qty").desc())
+
+    month_asc = Window.partitionBy(
+        "year", "month",
+        "city", "store_id"
+    ).orderBy(col("qty").asc())
+
+    monthly_ranked = (
+        monthly_pop
+        .withColumn("rn_max", row_number().over(month_desc))
+        .withColumn("rn_min", row_number().over(month_asc))
+    )
+
+    monthly_final = (
+        monthly_ranked
+        .select(
+            "year", "month",
+            "city", "store_id", 
+            when(col("rn_max") == 1, col("item_title")).alias("most_pop_item_per_month"),
+            when(col("rn_min") == 1, col("item_title")).alias("lst_pop_item_per_month")
+        )
+        .groupBy(
+            "year", "month",
+            "city", "store_id"
+        )
+        .agg(
+            max("most_pop_item_per_month").alias("most_pop_item_per_month"),
+            max("lst_pop_item_per_month").alias("lst_pop_item_per_month")
+        )
+    )
+
+
     final_mart = (
         mart_base
-        .join(pop_day,   ["year", "month", "day", "city", "store_id"], "left")
-        .join(pop_week,  ["year", "week", "city", "store_id"], "left")
-        .join(pop_month, ["year", "month", "city", "store_id"], "left")
+        .join(daily_final, ["year", "month", "day", "city", "store_id"], "left")
+        .join(weekly_final, ["year", "week", "city", "store_id"], "left")
+        .join(monthly_final, ["year", "month", "city", "store_id"], "left")
+        .select(
+            "year",
+            "month",
+            "day",
+            "city",
+            "store_id",
+            "item_category",
+            "item_title",
+            "item_turnover",
+            "tot_items_ordered",
+            "tot_canceled_units",
+            "tot_orders_item",
+            "tot_order_cancellation",
+            "most_pop_item_per_day",
+            "most_pop_item_per_week",
+            "most_pop_item_per_month",
+            "lst_pop_item_per_day",
+            "lst_pop_item_per_week",
+            "lst_pop_item_per_month"
+        )
     )
 
     final_mart.write.jdbc(

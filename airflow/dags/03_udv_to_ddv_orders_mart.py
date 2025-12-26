@@ -26,48 +26,46 @@ def build_orders_mart():
         .getOrCreate()
     )
 
-    hook.run("""
-        DROP TABLE IF EXISTS ddv.orders_mart;
-    """)
+    hook.run("DROP TABLE IF EXISTS ddv.orders_mart;")
 
     orders      = spark.read.jdbc(jdbc_url, "udv.orders", properties=props)
     deliveries  = spark.read.jdbc(jdbc_url, "udv.deliveries", properties=props)
     order_items = spark.read.jdbc(jdbc_url, "udv.order_items", properties=props)
     items       = spark.read.jdbc(jdbc_url, "udv.items", properties=props)
 
-    # Order item money
     item_money = (
         order_items
         .join(items, "item_id")
         .withColumn(
             "item_net",
-            col("item_quantity") *
+            col("item_quantity") * col("item_price") *
+            (1 - coalesce(col("item_discount"), lit(0)) / 100)
+        )
+        .withColumn(
+            "item_net_delivered",
+            (col("item_quantity") - col("item_canceled_quantity")) *
             col("item_price") *
             (1 - coalesce(col("item_discount"), lit(0)) / 100)
         )
         .groupBy("order_id")
         .agg(
             sum("item_net").alias("order_gross"),
-            sum(
-                (col("item_quantity") - col("item_canceled_quantity")) *
-                col("item_price") *
-                (1 - coalesce(col("item_discount"), lit(0)) / 100)
-            ).alias("order_revenue_items")
+            sum("item_net_delivered").alias("order_items_revenue")
         )
     )
 
-    # Delivery stats
     delivery_stats = (
         deliveries
         .groupBy("order_id")
         .agg(
-            countDistinct("driver_id").alias("driver_cnt"),
             sum("delivery_cost").alias("delivery_cost"),
-            max(when(col("delivered_at").isNotNull(), 1).otherwise(0)).alias("delivered_flag")
+            max(when(col("delivered_at").isNotNull(), 1).otherwise(0)).alias("delivered_flag"),
+            countDistinct("driver_id").alias("driver_cnt"),
+            collect_set("driver_id").alias("driver_ids")
         )
     )
 
-    mart = (
+    base = (
         orders
         .join(item_money, "order_id", "left")
         .join(delivery_stats, "order_id", "left")
@@ -75,63 +73,91 @@ def build_orders_mart():
         .withColumn("year", year("created_at"))
         .withColumn("month", month("created_at"))
         .withColumn("day", dayofmonth("created_at"))
-        .withColumn("city", split(col("address_text"), ",").getItem(0))
+        .withColumn("city", trim(split(col("address_text"), ",").getItem(0)))
+    )
 
-        # Discounts
+    base = (
+        base
         .withColumn(
             "turnover",
-            col("order_gross") * (1 - coalesce(col("order_discount"), lit(0)) / 100)
+            when(
+                col("canceled_at").isNull() & (col("delivered_flag") == 1),
+                col("order_gross") * (1 - coalesce(col("order_discount"), lit(0)) / 100)
+            ).otherwise(0)
         )
         .withColumn(
             "revenue",
             when(
-                col("delivered_flag") == 1,
-                col("order_revenue_items") * (1 - coalesce(col("order_discount"), lit(0)) / 100)
+                col("canceled_at").isNull() & (col("delivered_flag") == 1),
+                col("order_items_revenue") * (1 - coalesce(col("order_discount"), lit(0)) / 100)
             ).otherwise(0)
         )
         .withColumn(
             "profit",
-            col("revenue") - when(col("delivered_flag") == 1, col("delivery_cost")).otherwise(0)
-        )
-
-        # Counters
-        .withColumn("orders_created", lit(1))
-        .withColumn("orders_delivered", when(col("delivered_flag") == 1, 1).otherwise(0))
-        .withColumn("orders_canceled", when(col("canceled_at").isNotNull(), 1).otherwise(0))
-        .withColumn(
-            "canceled_after_delivery",
-            when(col("canceled_at").isNotNull() & (col("delivered_flag") == 1), 1).otherwise(0)
-        )
-        .withColumn(
-            "canceled_service_error",
             when(
-                col("order_cancellation_reason")
-                .isin("Ошибка приложения", "Проблемы с оплатой"),
-                1
+                col("canceled_at").isNull() & (col("delivered_flag") == 1),
+                col("order_items_revenue") * (1 - coalesce(col("order_discount"), lit(0)) / 100)
+                - coalesce(col("delivery_cost"), lit(0))
             ).otherwise(0)
         )
-        .withColumn("courier_shift", when(col("driver_cnt") > 1, 1).otherwise(0))
     )
 
-    final_mart = (
-        mart
+    orders_mart = (
+        base
         .groupBy("year", "month", "day", "city", "store_id")
         .agg(
             sum("turnover").alias("turnover"),
             sum("revenue").alias("revenue"),
             sum("profit").alias("profit"),
-            sum("orders_created").alias("orders_created"),
-            sum("orders_delivered").alias("orders_delivered"),
-            sum("orders_canceled").alias("orders_canceled"),
-            sum("canceled_after_delivery").alias("canceled_after_delivery"),
-            sum("canceled_service_error").alias("canceled_service_error"),
-            countDistinct("user_id").alias("qty_customers"),
-            (sum("revenue") / sum("orders_delivered")).alias("avg_check"),
-            (sum("orders_created") / countDistinct("user_id")).alias("tot_orders_customer"),
-            (sum("revenue") / countDistinct("user_id")).alias("revenue_per_customer"),
-            sum("courier_shift").alias("tot_courier_shifts"),
+
+            count("*").alias("orders_created"),
+            sum(when(col("delivered_flag") == 1, 1).otherwise(0)).alias("orders_delivered"),
+            sum(when(col("canceled_at").isNotNull(), 1).otherwise(0)).alias("orders_canceled"),
+
             sum(
-            when(col("delivered_flag") == 1, 1).otherwise(0)).alias("tot_active_couriers")
+                when(col("canceled_at").isNotNull() & (col("delivered_flag") == 1), 1)
+                .otherwise(0)
+            ).alias("canceled_after_delivery"),
+
+            sum(
+                when(
+                    col("order_cancellation_reason")
+                    .isin("Ошибка приложения", "Проблемы с оплатой"),
+                    1
+                ).otherwise(0)
+            ).alias("canceled_service_error"),
+
+            countDistinct(
+                when(
+                    col("canceled_at").isNull() & (col("delivered_flag") == 1),
+                    col("user_id")
+                )
+            ).alias("qty_customers"),
+
+            sum(when(col("driver_cnt") > 1, 1).otherwise(0)).alias("tot_courier_shifts")
+        )
+        .withColumn("avg_check", col("revenue") / col("orders_delivered"))
+        .withColumn("tot_orders_customer", col("orders_created") / col("qty_customers"))
+        .withColumn("revenue_per_customer", col("revenue") / col("qty_customers"))
+    )
+
+    active_couriers = (
+        base
+        .filter(col("canceled_at").isNull() & (col("delivered_flag") == 1))
+        .select(
+            "year", "month", "day", "city", "store_id",
+            explode(col("driver_ids")).alias("driver_id")
+        )
+        .groupBy("year", "month", "day", "city", "store_id")
+        .agg(countDistinct("driver_id").alias("tot_active_couriers"))
+    )
+
+    final_mart = (
+        orders_mart
+        .join(
+            active_couriers,
+            ["year", "month", "day", "city", "store_id"],
+            "left"
         )
     )
 
@@ -143,6 +169,7 @@ def build_orders_mart():
     )
 
     spark.stop()
+
 
 with DAG(
     dag_id="03_udv_to_ddv_orders_mart",
