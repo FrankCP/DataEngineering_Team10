@@ -9,7 +9,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__TEST_CONNECTION: "true"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow:5432/${POSTGRES_AIRFLOW_DB}
-  
+
     AIRFLOW_CONN_MAIN_POSTGRES: >
       postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-main:5432/${POSTGRES_DB_MAIN}
 
