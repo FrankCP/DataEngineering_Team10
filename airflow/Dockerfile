@@ -19,8 +19,11 @@ RUN curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public | gp
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Detect architecture and set JAVA_HOME correctly
+ARG TARGETARCH
+
 # 🔴 CRITICAL ENV VARS
-ENV JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-${TARGETARCH}
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 USER airflow
